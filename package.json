@@ -27,6 +27,9 @@
     "tsx": "^4.21.0",
     "typescript": "^5.7.3"
   },
+  "publishConfig": {
+    "access": "public"
+  },
   "author": "Gamebeast, Inc.",
   "license": "Apache-2.0"
 }
