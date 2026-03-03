@@ -10,16 +10,16 @@ type MarkerPayload = {
   properties : object
 }
 
-var runningTimeout : undefined | number;
-let MarkerCache: MarkerPayload[] = [];
+var runningTimeout: NodeJS.Timeout | null = null;
+let markerCache: MarkerPayload[] = [];
 
 function flushMarkers() {
-  if (MarkerCache.length === 0) {
+  if (markerCache.length === 0) {
     return;
   }
 
-  const markersToFlush = [...MarkerCache];
-  MarkerCache.length = 0;
+  const markersToFlush = [...markerCache];
+  markerCache.length = 0;
 
 
   console.log(JSON.stringify({ markers : markersToFlush }));
@@ -35,7 +35,7 @@ function flushMarkers() {
     })
     
 
-  MarkerCache = [];
+  markerCache = [];
 }
 
 function createMarker(markerName: string, markerValue : any, userId? : string) {
@@ -53,8 +53,8 @@ function createMarker(markerName: string, markerValue : any, userId? : string) {
     properties : markerValue
   }
 
-  MarkerCache.push(marker);
-  if (MarkerCache.length >= getConfig().markerFlushSize!) {
+  markerCache.push(marker);
+  if (markerCache.length >= getConfig().markerFlushSize!) {
     flushMarkers();
   }
 
@@ -68,12 +68,18 @@ function createMarker(markerName: string, markerValue : any, userId? : string) {
 
 }
 
-export const MarkersService = {
-  sendMarker(markerName: string, markerValue : any): void {
-    createMarker(markerName, markerValue);
-  },
 
-  sendUserMarker(userId : string, markerName : string, markerValue : any) : void {
-    createMarker(markerName, markerValue, userId);
+export default {
+  api : {
+    sendMarker(markerName: string, markerValue : any): void {
+      createMarker(markerName, markerValue);
+    },
+
+    sendUserMarker(userId : string, markerName : string, markerValue : any) : void {
+      createMarker(markerName, markerValue, userId);
+    }
+  },
+  setup : function() {
+    //
   }
 };
