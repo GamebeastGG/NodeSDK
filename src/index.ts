@@ -23,6 +23,7 @@ const Gamebeast = {
     setConfig(options);
     startServices();
   },
+  getConfig: configsService.api.getConfig
 };
 
 export default Gamebeast;

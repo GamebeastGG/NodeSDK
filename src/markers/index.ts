@@ -1,4 +1,4 @@
-import { getConfig } from "../config";
+import { getSdkConfig } from "../config";
 import { makeRequest } from "../requester";
 
 type MarkerPayload = {
@@ -54,7 +54,7 @@ function createMarker(markerName: string, markerValue : any, userId? : string) {
   }
 
   markerCache.push(marker);
-  if (markerCache.length >= getConfig().markerFlushSize!) {
+  if (markerCache.length >= getSdkConfig().markerFlushSize!) {
     flushMarkers();
   }
 

@@ -1,4 +1,4 @@
-import { getConfig } from "./config";
+import { getSdkConfig } from "./config";
 
 type Methods = "GET" | "POST" | "PUT" | "DELETE";
 
@@ -25,11 +25,14 @@ const ENDPOINTS : Endpoint[] = [
 			["v1/requests/completed"] : "POST",
 			["v1/requests/started"] : "PUT",
 			["v1/configurations"] : "GET",
-			["v1/latest/version?platform=roblox"] : "GET",
 			["v1/experiments"] : "GET",
 			["v1/experiments/assignments"] : "POST",
 			["v1/servers/roblox/{serverId}"] : "POST",
-			["v1/cohorts/membership"] : "POST"
+			["v1/cohorts/membership"] : "POST",
+            // Temporary endpoint for testing config updates. Remove in future.
+            ["v2/configs/{configName}"] : "GET",
+            ["v2/status"] : "GET",
+            ["v2/experiments/assignment"] : "GET"
 		},
 		EndpointTree : {} // Automatically generated from above
 	}
@@ -51,7 +54,7 @@ function getRequestUrl(path : string) : { url : string, method : Methods } | und
             }
         }
         if (currentNode["__METHOD"]) {
-            const { url } = getConfig();
+            const { url } = getSdkConfig();
 
             return {
                 url : `${url}${URL_SUFFIX}/${path}`,
@@ -63,10 +66,39 @@ function getRequestUrl(path : string) : { url : string, method : Methods } | und
     };
 }
 
-export function makeRequest<T>(path : string, body : object) : Promise<Response<T>> {
-    const { apiKey, production } = getConfig();
+function makeSearchParams(params : object) {
+    const paramsArray : {k : string, v : any}[] = [];
+    for (const [key, value] of Object.entries(params)) {
+        if (value === undefined) {
+            continue;
+        }
 
-    const { url, method } = getRequestUrl(path)!;
+        if (Array.isArray(value)) {
+            value.forEach(val => {
+                paramsArray.push({ k: key, v: val });
+            });
+        } else {
+            paramsArray.push({ k: key, v: value });
+        }
+    }
+
+    const paramsString = paramsArray.map(({ k, v }) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`).join("&");
+    return paramsString;
+}
+
+
+export function makeRequest<T>(path : string, body : object = {}) : Promise<Response<T>> {
+    const { apiKey, production } = getSdkConfig();
+
+    let { url, method } = getRequestUrl(path)!;
+
+    if (method == "GET") {
+        if (Object.keys(body).length > 0) {
+            url += "?" + makeSearchParams(body);
+        }
+    } 
+
+    console.log(`Making request to ${url} with method ${method} and body`, body);
     return fetch(url, {
         method: method,
         headers: {
@@ -75,10 +107,8 @@ export function makeRequest<T>(path : string, body : object) : Promise<Response<
             "isstudio" : production ? "false" : "true",
             //"serverid" : "node-0000", //TODO: Determine what this should be for non-roblox.
             "sdkVersion" : "0.1.0"
-
-
         },
-        body: JSON.stringify(body)
+        body: method !== "GET" ? JSON.stringify(body) : undefined
     }).then(async (response) => {
         let data = await response.json() as T;
 
