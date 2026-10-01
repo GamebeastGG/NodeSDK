@@ -1,3 +1,8 @@
+import {
+  MARKER_SERVER_ID_MAX_LENGTH,
+  SDK_SERVER_ID_MAX_LENGTH,
+} from "@gamebeast/sdk-contract/core";
+
 import type { FetchLike, HttpResponse } from "./http";
 import {
   describeResponse,
@@ -178,7 +183,8 @@ export class ApiClient {
     return this.send({
       method: "POST",
       path: "v1/markers",
-      headers: serverId !== undefined ? { serverid: serverId.slice(0, 100) } : {},
+      headers:
+        serverId !== undefined ? { serverid: serverId.slice(0, MARKER_SERVER_ID_MAX_LENGTH) } : {},
       body: { markers },
       keepalive: options.keepalive === true,
     });
@@ -296,7 +302,9 @@ export class ApiClient {
 
   private serverIdHeader(): Record<string, string> {
     const serverId = this.options.serverId;
-    return serverId !== undefined ? { "server-id": serverId.slice(0, 128) } : {};
+    return serverId !== undefined
+      ? { "server-id": serverId.slice(0, SDK_SERVER_ID_MAX_LENGTH) }
+      : {};
   }
 
   /** A plain request: success with a well-formed body, or a failure. */

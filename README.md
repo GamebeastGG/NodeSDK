@@ -278,5 +278,16 @@ npm run build          # tsup → dist (ESM + CJS + .d.ts)
 npm run check:package  # publint + are-the-types-wrong
 ```
 
+### The API contract
+
+Request and response shapes come from
+[`@gamebeast/sdk-contract`](https://www.npmjs.com/package/@gamebeast/sdk-contract), the same package
+core-backend declares its `/sdk/*` routes with (`packages/sdk-contract` in service-monorepo), along
+with `toAliasSlug` and the request limits. `src/shared/wire.ts` only maps the SDK's names onto it.
+Don't define wire shapes here: change the contract, release it, then bump the dependency.
+
+The browser entry imports only type-only imports and `@gamebeast/sdk-contract/core` (no Zod), so
+the schemas stay out of its bundle.
+
 Publishing runs from a GitHub release (`.github/workflows/publish.yml`). `prepublishOnly` runs
 every check above first.

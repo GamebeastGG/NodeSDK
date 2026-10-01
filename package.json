@@ -72,8 +72,11 @@
     "format:check": "prettier --check .",
     "test": "vitest run",
     "test:watch": "vitest",
-    "check:package": "publint && attw --pack . --profile node16",
+    "check:package": "publint && attw --pack . --profile node16 && node scripts/check-client-bundle.mjs",
     "prepublishOnly": "npm run typecheck && npm run lint && npm run test && npm run build && npm run check:package"
+  },
+  "dependencies": {
+    "@gamebeast/sdk-contract": "^1.0.0"
   },
   "devDependencies": {
     "@arethetypeswrong/cli": "^0.18.5",

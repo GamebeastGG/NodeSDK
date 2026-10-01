@@ -3,7 +3,7 @@ import { parsePathOrLog, readValue } from "../shared/configStore";
 import type { Properties } from "../shared/context";
 import { sanitizeProperties } from "../shared/context";
 import { toAliasSlug } from "../shared/environment";
-import { normalizeDistinctId } from "../shared/ids";
+import { DISTINCT_ID_MAX_LENGTH, normalizeDistinctId } from "../shared/ids";
 import type { ConfigPath } from "../shared/json";
 import { formatConfigPath, toSegments } from "../shared/json";
 import type { Unsubscribe } from "../shared/listeners";
@@ -249,7 +249,9 @@ export class ServerConfigsService implements ServerConfigs {
     }
     const distinctId = normalizeDistinctId(options.distinctId);
     if (distinctId === undefined) {
-      logger.error("configs.evaluate requires a distinctId of 1-256 characters.");
+      logger.error(
+        `configs.evaluate requires a distinctId of 1-${DISTINCT_ID_MAX_LENGTH} characters.`
+      );
       return Promise.resolve(this.fallback(options.configuration, "invalid distinctId"));
     }
     let alias: string | undefined;

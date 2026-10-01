@@ -1,200 +1,112 @@
 /**
- * Wire types for the Gamebeast SDK HTTP API, mirroring the core-backend Zod schemas:
+ * Wire types for the Gamebeast SDK HTTP API.
  *
- * - `sdk/v2/sdk.v2.schema.ts`                          — v2 error envelope
- * - `sdk/v2/configurations/configurations.v2.schema.ts` — configuration fetch / evaluate
- * - `sdk/v2/bootstrap/bootstrap.v2.schema.ts`          — `/bootstrap` and `/status` snapshots
- * - `sdk/v2/experiments/experiments.v2.schema.ts`      — assignments, bulk, active catalog
- * - `sdk/v1/ingestion/markers/*`                       — marker ingestion (`none` / `unity` platforms)
- * - `sdk/v1/cohorts/sdkCohorts.controller.ts`          — cohort membership (actual response shape)
+ * Every shape here comes from `@gamebeast/sdk-contract`, the package core-backend declares its
+ * `/sdk/*` routes with, so this file only maps the SDK's names onto the contract. Do not define a
+ * request or response shape here: change it in the contract (service-monorepo,
+ * `packages/sdk-contract`) and bump the dependency.
+ *
+ * Type-only imports: these are erased at build time, so the browser bundle never loads the schemas.
  */
+import type {
+  ActiveChangesetOperation,
+  ActiveExperimentsResponse as ContractActiveExperimentsResponse,
+  ActiveSdkExperiment,
+  AssignmentSource as ContractAssignmentSource,
+  BulkAssignResponse as ContractBulkAssignResponse,
+  BulkAssignV2Body,
+  ContextValue as ContractContextValue,
+  EvaluateConfigurationV2Body,
+  ExperimentAssignmentMetadata as ContractExperimentAssignmentMetadata,
+  GetCohortMembershipResponse,
+  IngestMarkersInvalid,
+  IngestMarkersSuccess,
+  PropertiesEvaluationContext,
+  SdkAssignmentEntryV2,
+  SdkBootstrapV2Response,
+  SdkConfigurationV2Response,
+  SdkExperimentDescriptor as ContractSdkExperimentDescriptor,
+  SdkExperimentGroup as ContractSdkExperimentGroup,
+  SdkMarkerPayload,
+  SdkStatusV2Response,
+  SdkUnitType,
+  SdkV2ErrorResponse as ContractSdkV2ErrorResponse,
+  SnapshotConfiguration as ContractSnapshotConfiguration,
+  SnapshotConfigurationSummary as ContractSnapshotConfigurationSummary,
+  SnapshotPolling as ContractSnapshotPolling,
+} from "@gamebeast/sdk-contract";
 
-/** Any JSON value. */
+/** Any JSON value. Part of the SDK's public API (configuration values), not a wire shape. */
 export type JsonValue =
   string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
 export type JsonObject = { [key: string]: JsonValue };
 
-export type UnitType = "user" | "server";
-export type AssignmentSource = "weightedHash" | "roundRobin" | "manual";
+export type UnitType = SdkUnitType;
+export type AssignmentSource = ContractAssignmentSource;
+export type ContextValue = ContractContextValue;
 
 // --- Errors -------------------------------------------------------------------------------------
 
-export interface SdkV2ErrorResponse {
-  errorCode: string;
-  message: string;
-}
+export type SdkV2ErrorResponse = ContractSdkV2ErrorResponse;
 
 // --- Configurations -----------------------------------------------------------------------------
 
-export interface ExperimentAssignmentMetadata {
-  experimentId: number;
-  groupId: number;
-  assignmentVersion: number;
-  source: AssignmentSource;
-  exposureProxyRecorded: boolean;
-}
+export type ExperimentAssignmentMetadata = ContractExperimentAssignmentMetadata;
 
-/** `GET /sdk/v2/configurations` and `POST /sdk/v2/configurations/evaluate` (200). */
-export interface ConfigurationResponse {
-  hash: string;
-  configurationId: number;
-  name: string | null;
+/**
+ * `GET /sdk/v2/configurations` and `POST /sdk/v2/configurations/evaluate` (200). `configuration`
+ * is narrowed to the SDK's `JsonValue`, which is what the contract's `z.json()` validates.
+ */
+export type ConfigurationResponse = Omit<SdkConfigurationV2Response, "configuration"> & {
   configuration: JsonValue;
-  /** Paths (as key segments) flagged private in the dashboard. */
-  privacy: string[][];
-  updatedAt: string;
-  experiments: ExperimentAssignmentMetadata[];
-  requiredProperties: string[];
-}
+};
 
-/** Scalar or homogeneous scalar array — the only value shapes a targeting context accepts. */
-export type ContextValue = string | number | boolean | null | string[] | number[] | boolean[];
-
-export interface EvaluationContextBody {
-  schemaVersion: 1;
-  properties?: Record<string, ContextValue>;
-}
-
-export interface EvaluateConfigurationBody {
-  configuration?: string;
-  unit: { type: UnitType; distinctId: string };
-  context?: EvaluationContextBody;
-  knownHash?: string;
-}
+export type EvaluationContextBody = PropertiesEvaluationContext;
+export type EvaluateConfigurationBody = EvaluateConfigurationV2Body;
 
 // --- Experiments --------------------------------------------------------------------------------
 
-export interface SdkExperimentGroup {
-  id: number;
-  label: string;
-  /** Allocation weight in basis points; `null` for round-robin experiments. */
-  weight: number | null;
-  ordinal: number;
-}
-
-export interface SdkExperimentDescriptor {
-  id: number;
-  name: string;
-  unitType: UnitType;
-  assignmentMode: "weightedHash" | "roundRobin";
-  baseConfigurationId: number;
-  autoAssignment: boolean;
-  permanentEnrollment: boolean;
-  requiredProperties: string[];
-  startsAt: string;
-  endsAt: string | null;
-  groups: SdkExperimentGroup[];
-}
-
-export interface ChangesetOperation {
-  op: "set" | "add" | "delete";
-  path: string[];
-  value?: unknown;
-}
-
-export interface ActiveExperiment extends Omit<SdkExperimentDescriptor, "groups"> {
-  groups: Array<SdkExperimentGroup & { changeset: { operations: ChangesetOperation[] } }>;
-}
-
+export type SdkExperimentGroup = ContractSdkExperimentGroup;
+export type SdkExperimentDescriptor = ContractSdkExperimentDescriptor;
+export type ChangesetOperation = ActiveChangesetOperation;
+export type ActiveExperiment = ActiveSdkExperiment;
 /** `GET /sdk/v2/experiments/active` (200). */
-export interface ActiveExperimentsResponse {
-  hash: string;
-  requiredProperties: string[];
-  experiments: ActiveExperiment[];
-}
+export type ActiveExperimentsResponse = ContractActiveExperimentsResponse;
 
-export interface AssignmentEntry {
-  experimentId: number;
-  groupId: number;
-  automaticGroupId: number | null;
-  overrideGroupId: number | null;
-  status: "active" | "unenrolled";
-  source: AssignmentSource;
-  assignmentVersion: number;
-}
-
-export interface BulkAssignUnit {
-  distinctId: string;
-  context?: { properties?: Record<string, ContextValue> };
-}
-
-export interface BulkAssignBody {
-  unitType: UnitType;
-  sharedContext?: EvaluationContextBody;
-  units: BulkAssignUnit[];
-}
-
+export type AssignmentEntry = SdkAssignmentEntryV2;
+export type BulkAssignBody = BulkAssignV2Body;
+export type BulkAssignUnit = BulkAssignV2Body["units"][number];
 /** `POST /sdk/v2/experiments/assignments/bulk` (200). */
-export interface BulkAssignResponse {
-  assignments: Record<string, AssignmentEntry[]>;
-}
+export type BulkAssignResponse = ContractBulkAssignResponse;
 
 // --- Snapshot (bootstrap / status) --------------------------------------------------------------
 
-export interface SnapshotConfigurationSummary {
-  id: number;
-  name: string | null;
-  alias: string | null;
-  hash: string;
-}
-
-export interface SnapshotConfiguration extends SnapshotConfigurationSummary {
+export type SnapshotConfigurationSummary = ContractSnapshotConfigurationSummary;
+export type SnapshotConfiguration = Omit<ContractSnapshotConfiguration, "configuration"> & {
   configuration: JsonValue;
-  privacy: string[][];
-}
-
-export interface SnapshotPolling {
-  intervalSeconds: number;
-  jitterRatio: number;
-}
+};
+export type SnapshotPolling = ContractSnapshotPolling;
 
 /** `GET /sdk/v2/status` (200). */
-export interface StatusResponse {
-  hash: string;
-  configurations: SnapshotConfigurationSummary[];
-  primaryConfigurationId: number | null;
-  experiments: { user: SdkExperimentDescriptor[]; server: SdkExperimentDescriptor[] };
-  requiredProperties: string[];
-  polling: SnapshotPolling;
-}
+export type StatusResponse = SdkStatusV2Response;
 
 /** `GET /sdk/v2/bootstrap` (200). */
-export interface BootstrapResponse extends Omit<StatusResponse, "configurations"> {
+export type BootstrapResponse = Omit<SdkBootstrapV2Response, "configurations"> & {
   configurations: SnapshotConfiguration[];
-}
+};
 
 // --- Markers ------------------------------------------------------------------------------------
 
-/**
- * One marker as `POST /sdk/v1/markers` validates it for `none`/`unity`/`discord` projects.
- * `timestamp` is epoch milliseconds (values below 10^12 are read as seconds by the backend).
- */
-export interface MarkerPayload {
-  markerId: string;
-  timestamp: number;
-  eventName: string;
-  distinctId?: string;
-  sessionId?: string;
-  properties: Record<string, unknown>;
-}
+/** One marker as the SDK sends it to `POST /sdk/v1/markers`. `timestamp` is epoch milliseconds. */
+export type MarkerPayload = SdkMarkerPayload;
 
-export interface IngestMarkersResponse {
-  message: string;
-  ingestedMarkersCount: number;
-  rejectedMarkersCount: number;
-  staleMarkersCount?: number;
-  rejectedMarkers?: Array<{ marker: unknown; reason: string }>;
-  errorCode?: string;
-}
+/**
+ * `POST /sdk/v1/markers` body on any outcome: the 200 counts, or the 400 (every marker rejected)
+ * and 403 envelopes. Read defensively: an error response may carry only part of it.
+ */
+export type IngestMarkersResponse = Partial<IngestMarkersSuccess & IngestMarkersInvalid>;
 
 // --- Cohorts ------------------------------------------------------------------------------------
 
-/**
- * `POST /sdk/v1/cohorts/membership` (200), as the controller actually sends it. The route's
- * declared OpenAPI schema is a bare array, which does not match what is served; the SDK accepts
- * both so it keeps working if the backend is later aligned with its schema.
- */
-export interface CohortMembershipResponse {
-  cohortExists: boolean;
-  users: Array<{ userId: string; isMember: boolean }>;
-}
+/** `POST /sdk/v1/cohorts/membership` (200). */
+export type CohortMembershipResponse = GetCohortMembershipResponse;

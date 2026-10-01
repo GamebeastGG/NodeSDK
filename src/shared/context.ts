@@ -1,14 +1,18 @@
+import {
+  CONTEXT_MAX_ARRAY_ELEMENTS,
+  CONTEXT_MAX_PROPERTIES,
+  CUSTOM_PROPERTY_NAME_MAX as CONTEXT_PROPERTY_NAME_MAX,
+} from "@gamebeast/sdk-contract/core";
+
 import type { Logger } from "./logger";
 import type { ContextValue } from "./wire";
 
 /**
- * Limits the backend enforces on evaluation context (`@gamebeast/experiments` targeting/context).
- * The context is validated as a whole, so one bad property fails the entire request with a 400;
- * the SDK drops invalid properties locally (with a warning) instead.
+ * The backend validates the evaluation context as a whole, so one bad property fails the entire
+ * request with a 400. The SDK enforces the contract's limits locally and drops invalid properties
+ * (with a warning) instead.
  */
-export const CONTEXT_MAX_PROPERTIES = 100;
-export const CONTEXT_MAX_ARRAY_ELEMENTS = 100;
-export const CONTEXT_PROPERTY_NAME_MAX = 128;
+export { CONTEXT_MAX_ARRAY_ELEMENTS, CONTEXT_MAX_PROPERTIES, CONTEXT_PROPERTY_NAME_MAX };
 
 /**
  * Values accepted as targeting properties. `Date` is sent as epoch milliseconds, which is how the
