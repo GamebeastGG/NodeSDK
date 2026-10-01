@@ -20,14 +20,17 @@ export interface ParsedConfigPath {
   segments: readonly string[];
 }
 
-export function parseConfigPath(path: ConfigPath): ParsedConfigPath | undefined {
-  let parts: unknown[];
-  if (typeof path === "string") parts = path.split(".");
-  else if (Array.isArray(path)) parts = [...(path as readonly unknown[])];
-  else return undefined;
+/** The segments of a path, or `undefined` when it is neither a string nor an array of strings. */
+export function toSegments(path: ConfigPath): string[] | undefined {
+  if (typeof path === "string") return path.split(".");
+  if (Array.isArray(path) && path.every((segment) => typeof segment === "string")) return [...path];
+  return undefined;
+}
 
-  if (parts.some((part) => typeof part !== "string")) return undefined;
-  const segments = parts as string[];
+/** Split an absolute path into the configuration alias and the path inside its document. */
+export function parseConfigPath(path: ConfigPath): ParsedConfigPath | undefined {
+  const segments = toSegments(path);
+  if (!segments) return undefined;
   const alias = (segments[0] ?? "").trim();
   const key = toAliasSlug(alias);
   if (key === "") return undefined;

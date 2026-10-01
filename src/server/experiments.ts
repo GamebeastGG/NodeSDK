@@ -51,9 +51,7 @@ export class ServerExperimentsService implements ServerExperiments {
   ) {}
 
   list(unitType: UnitType = "user"): readonly SdkExperimentDescriptor[] {
-    const experiments = this.snapshot.current?.experiments;
-    if (!experiments) return [];
-    return unitType === "server" ? experiments.server : experiments.user;
+    return this.snapshot.experiments[unitType === "server" ? "server" : "user"];
   }
 
   async assign(

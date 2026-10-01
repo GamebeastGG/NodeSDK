@@ -2,10 +2,11 @@ import type { ApiClient } from "../shared/api";
 import { GamebeastError } from "../shared/errors";
 import { normalizeDistinctId } from "../shared/ids";
 import type { Logger } from "../shared/logger";
+import { LruCache } from "../shared/lruCache";
 import type { TimerHandle } from "../shared/timers";
 import { startTimeout } from "../shared/timers";
 
-const DEFAULT_CACHE_TTL_MS = 60_000;
+const CACHE_TTL_MS = 60_000;
 const CACHE_MAX_ENTRIES = 50_000;
 /** Checks for the same cohort arriving within this window share one request. */
 const COALESCE_WINDOW_MS = 10;
@@ -41,13 +42,14 @@ interface PendingBatch {
  * the same cohort are coalesced into one request.
  */
 export class ServerCohortsService implements ServerCohorts {
-  private readonly cache = new Map<string, { isMember: boolean; fetchedAt: number }>();
+  private readonly cache = new LruCache<string, { isMember: boolean; fetchedAt: number }>(
+    CACHE_MAX_ENTRIES
+  );
   private readonly pending = new Map<string, PendingBatch>();
 
   constructor(
     private readonly api: ApiClient,
-    private readonly logger: Logger,
-    private readonly ttlMs: number = DEFAULT_CACHE_TTL_MS
+    private readonly logger: Logger
   ) {}
 
   async isMember(cohortName: string, distinctId: string): Promise<boolean> {
@@ -85,7 +87,7 @@ export class ServerCohortsService implements ServerCohorts {
         continue;
       }
       const cached = this.cache.get(cacheKey(name, id));
-      if (cached && now - cached.fetchedAt < this.ttlMs) result.set(id, cached.isMember);
+      if (cached && now - cached.fetchedAt < CACHE_TTL_MS) result.set(id, cached.isMember);
       else missing.add(id);
     }
     if (missing.size === 0) return result;
@@ -130,24 +132,15 @@ export class ServerCohortsService implements ServerCohorts {
         }
         const fetchedAt = Date.now();
         for (const entry of result.data.users) membership.set(entry.userId, entry.isMember);
-        for (const id of chunk) this.remember(name, id, membership.get(id) === true, fetchedAt);
+        for (const id of chunk) {
+          this.cache.set(cacheKey(name, id), { isMember: membership.get(id) === true, fetchedAt });
+        }
       }
     } catch (error) {
       for (const waiter of batch.waiters) waiter.reject(error);
       return;
     }
     for (const waiter of batch.waiters) waiter.resolve(membership);
-  }
-
-  private remember(name: string, id: string, isMember: boolean, fetchedAt: number): void {
-    const key = cacheKey(name, id);
-    this.cache.delete(key);
-    this.cache.set(key, { isMember, fetchedAt });
-    while (this.cache.size > CACHE_MAX_ENTRIES) {
-      const oldest = this.cache.keys().next().value;
-      if (oldest === undefined) break;
-      this.cache.delete(oldest);
-    }
   }
 }
 
