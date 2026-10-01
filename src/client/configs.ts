@@ -91,6 +91,8 @@ export interface ClientConfigsDeps {
   distinctId: () => string;
   properties: () => Record<string, ContextValue>;
   reportAssignments: (configKey: string, assignments: ExperimentAssignmentMetadata[]) => void;
+  /** Server-side rendering: serve fallbacks and never fetch. */
+  inert: boolean;
 }
 
 export class ClientConfigsService implements ClientConfigs {
@@ -119,10 +121,13 @@ export class ClientConfigsService implements ClientConfigs {
       this.register(trimmed, key, true);
     }
     this.checkReady();
+    // Server-side rendering: born stopped, so reads return fallbacks and nothing is fetched.
+    if (deps.inert) this.shutdown();
   }
 
   /** Begin fetching and schedule background refreshes. */
   start(): void {
+    if (this.stopped) return;
     void this.refreshAll();
     if (this.deps.refreshIntervalMs > 0) {
       this.refreshTimer = startInterval(() => {
