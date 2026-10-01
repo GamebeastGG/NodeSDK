@@ -51,9 +51,7 @@ export class ServerExperimentsService implements ServerExperiments {
   ) {}
 
   list(unitType: UnitType = "user"): readonly SdkExperimentDescriptor[] {
-    const experiments = this.snapshot.current?.experiments;
-    if (!experiments) return [];
-    return unitType === "server" ? experiments.server : experiments.user;
+    return this.snapshot.experiments[unitType === "server" ? "server" : "user"];
   }
 
   async assign(
@@ -107,16 +105,8 @@ export class ServerExperimentsService implements ServerExperiments {
         ...(sharedContext ? { sharedContext } : {}),
         units: batch,
       });
-      if (result.status !== "updated") {
-        const failure = result.status === "failed" ? result : undefined;
-        throw new GamebeastError(
-          `experiments.assign failed: ${result.status === "notModified" ? "unexpected 304" : result.error}`,
-          {
-            ...(failure?.httpStatus !== undefined ? { status: failure.httpStatus } : {}),
-            ...(failure?.errorCode !== undefined ? { errorCode: failure.errorCode } : {}),
-            retryable: failure?.retryable ?? false,
-          }
-        );
+      if (result.status === "failed") {
+        throw GamebeastError.fromFailure("experiments.assign failed", result);
       }
       for (const unit of batch) {
         results.set(unit.distinctId, result.data.assignments[unit.distinctId] ?? []);

@@ -1,12 +1,15 @@
-import type { ApiClient, FetchResult } from "../shared/api";
+import type { ApiClient, ConfigurationResult } from "../shared/api";
 import { parsePathOrLog, readValue } from "../shared/configStore";
 import type { Properties } from "../shared/context";
 import { sanitizeProperties } from "../shared/context";
 import { toAliasSlug } from "../shared/environment";
+import { normalizeDistinctId } from "../shared/ids";
 import type { ConfigPath } from "../shared/json";
-import { formatConfigPath } from "../shared/json";
+import { formatConfigPath, toSegments } from "../shared/json";
 import type { Unsubscribe } from "../shared/listeners";
 import type { Logger } from "../shared/logger";
+import { LruCache } from "../shared/lruCache";
+import { SingleFlight } from "../shared/singleFlight";
 import type {
   ConfigurationResponse,
   EvaluateConfigurationBody,
@@ -14,10 +17,7 @@ import type {
   JsonValue,
   UnitType,
 } from "../shared/wire";
-import { normalizeDistinctId as normalizeUnitId } from "../shared/ids";
 import type { ConfigurationInfo, SnapshotService } from "./snapshot";
-
-const DEFAULT_CACHE_MAX_ENTRIES = 10_000;
 
 /** Where an evaluated configuration's value came from. */
 export type EvaluationSource =
@@ -101,22 +101,39 @@ export interface ServerConfigs {
   refresh(): Promise<void>;
 }
 
+const CACHE_MAX_ENTRIES = 10_000;
+
 interface CacheEntry {
   response: ConfigurationResponse;
   fetchedAt: number;
 }
 
+/** Identity of the document an `Evaluated` holds; absent when `source` is `"unavailable"`. */
+interface DocumentMeta {
+  configurationId: number;
+  name: string | null;
+  hash: string;
+  experiments: readonly ExperimentAssignmentMetadata[];
+}
+
 class Evaluated implements EvaluatedConfiguration {
+  readonly configurationId: number | null;
+  readonly name: string | null;
+  readonly hash: string | null;
+  readonly experiments: readonly ExperimentAssignmentMetadata[];
+
   constructor(
     readonly source: EvaluationSource,
     private readonly document: JsonValue | undefined,
-    readonly configurationId: number | null,
-    readonly name: string | null,
-    readonly hash: string | null,
-    readonly experiments: readonly ExperimentAssignmentMetadata[],
+    meta: DocumentMeta | undefined,
     readonly error: string | undefined,
     private readonly logger: Logger
-  ) {}
+  ) {
+    this.configurationId = meta?.configurationId ?? null;
+    this.name = meta?.name ?? null;
+    this.hash = meta?.hash ?? null;
+    this.experiments = Object.freeze([...(meta?.experiments ?? [])]);
+  }
 
   get value(): JsonValue | undefined {
     return readValue(this.document, [], undefined, "", this.logger) as JsonValue | undefined;
@@ -125,11 +142,9 @@ class Evaluated implements EvaluatedConfiguration {
   get<T = JsonValue>(path?: ConfigPath): T | undefined;
   get<T>(path: ConfigPath, fallback: T): T;
   get<T>(path: ConfigPath = [], fallback?: T): T | undefined {
-    let segments: string[];
-    if (typeof path === "string") segments = path === "" ? [] : path.split(".");
-    else if (Array.isArray(path) && path.every((segment) => typeof segment === "string"))
-      segments = [...path];
-    else {
+    // Relative to the document root, so an empty string means the whole document.
+    const segments = path === "" ? [] : toSegments(path);
+    if (!segments) {
       this.logger.error(
         `EvaluatedConfiguration.get received an invalid path ${JSON.stringify(path)}.`
       );
@@ -160,17 +175,18 @@ export interface ServerConfigsDeps {
   snapshot: SnapshotService;
   /** How long an evaluation is reused without asking the backend. `0` always asks. */
   cacheTtlMs: number;
-  cacheMaxEntries?: number;
 }
 
+/**
+ * Base configurations come from the snapshot (`get`, `observe`, `onChanged`, `list`); per-unit
+ * values come from `evaluate`, cached per (unit, configuration, properties) and revalidated by hash.
+ */
 export class ServerConfigsService implements ServerConfigs {
-  /** Insertion-ordered, so the first key is the least recently used. */
-  private readonly cache = new Map<string, CacheEntry>();
-  private readonly inFlight = new Map<string, Promise<EvaluatedConfiguration>>();
-  private readonly maxEntries: number;
+  private readonly cache: LruCache<string, CacheEntry>;
+  private readonly inFlight = new SingleFlight<string, EvaluatedConfiguration>();
 
   constructor(private readonly deps: ServerConfigsDeps) {
-    this.maxEntries = Math.max(0, deps.cacheMaxEntries ?? DEFAULT_CACHE_MAX_ENTRIES);
+    this.cache = new LruCache(deps.cacheTtlMs > 0 ? CACHE_MAX_ENTRIES : 0);
   }
 
   get isReady(): boolean {
@@ -184,7 +200,21 @@ export class ServerConfigsService implements ServerConfigs {
   get<T = JsonValue>(path: ConfigPath): T | undefined;
   get<T>(path: ConfigPath, fallback: T): T;
   get<T>(path: ConfigPath, fallback?: T): T | undefined {
-    return this.deps.snapshot.read(path, fallback, "configs.get") as T | undefined;
+    const { logger, snapshot } = this.deps;
+    const parsed = parsePathOrLog(path, logger, "configs.get");
+    if (!parsed) return fallback;
+    if (!snapshot.loaded) {
+      logger.debug("configs.get: configurations have not loaded yet; await ready() first.");
+      return fallback;
+    }
+    if (!snapshot.store.has(parsed.key)) {
+      logger.warnOnce(
+        `unknown-config:${parsed.key}`,
+        `No configuration with alias '${parsed.alias}' exists in this environment.`
+      );
+      return fallback;
+    }
+    return snapshot.store.read(parsed, path, fallback) as T | undefined;
   }
 
   observe<T = JsonValue>(path: ConfigPath, callback: (value: T | undefined) => void): Unsubscribe {
@@ -199,7 +229,7 @@ export class ServerConfigsService implements ServerConfigs {
   }
 
   list(): ConfigurationInfo[] {
-    return this.deps.snapshot.configurationInfo();
+    return this.deps.snapshot.configurations.map((entry) => ({ ...entry }));
   }
 
   refresh(): Promise<void> {
@@ -208,15 +238,19 @@ export class ServerConfigsService implements ServerConfigs {
 
   evaluate(options: EvaluateOptions): Promise<EvaluatedConfiguration> {
     const logger = this.deps.logger;
-    const unitType: UnitType = options?.unitType ?? "user";
+    if (options === null || typeof options !== "object") {
+      logger.error("configs.evaluate requires options, e.g. { distinctId: user.id }.");
+      return Promise.resolve(this.fallback(undefined, "missing options"));
+    }
+    const unitType: UnitType = options.unitType ?? "user";
     if (unitType !== "user" && unitType !== "server") {
       logger.error(`configs.evaluate: unitType must be "user" or "server".`);
-      return Promise.resolve(this.fallback(options?.configuration, "invalid unitType"));
+      return Promise.resolve(this.fallback(options.configuration, "invalid unitType"));
     }
-    const distinctId = normalizeUnitId(options?.distinctId);
+    const distinctId = normalizeDistinctId(options.distinctId);
     if (distinctId === undefined) {
       logger.error("configs.evaluate requires a distinctId of 1-256 characters.");
-      return Promise.resolve(this.fallback(options?.configuration, "invalid distinctId"));
+      return Promise.resolve(this.fallback(options.configuration, "invalid distinctId"));
     }
     let alias: string | undefined;
     if (options.configuration !== undefined) {
@@ -237,56 +271,37 @@ export class ServerConfigsService implements ServerConfigs {
 
     const cached = this.cache.get(cacheKey);
     if (cached && Date.now() - cached.fetchedAt < this.deps.cacheTtlMs) {
-      this.touch(cacheKey, cached);
+      this.cache.set(cacheKey, cached);
       return Promise.resolve(this.fromResponse("evaluated", cached.response, undefined));
     }
 
-    const existing = this.inFlight.get(cacheKey);
-    if (existing) return existing;
-
-    const body: EvaluateConfigurationBody = {
-      unit: { type: unitType, distinctId },
-      ...(alias !== undefined ? { configuration: alias } : {}),
-      ...(Object.keys(properties).length > 0
-        ? { context: { schemaVersion: 1 as const, properties } }
-        : {}),
-      ...(cached ? { knownHash: cached.response.hash } : {}),
-    };
-
-    const promise = this.deps.api
-      .evaluateConfiguration(body)
-      .then((result) => this.handle(result, cacheKey, cached, alias))
-      .finally(() => {
-        if (this.inFlight.get(cacheKey) === promise) this.inFlight.delete(cacheKey);
-      });
-    this.inFlight.set(cacheKey, promise);
-    return promise;
-  }
-
-  /** Drop cached evaluations (all, or one unit's). */
-  clearCache(distinctId?: string): void {
-    if (distinctId === undefined) {
-      this.cache.clear();
-      return;
-    }
-    for (const key of [...this.cache.keys()]) {
-      if (key.split("\u0000")[1] === distinctId) this.cache.delete(key);
-    }
+    return this.inFlight.run(cacheKey, async () => {
+      const body: EvaluateConfigurationBody = {
+        unit: { type: unitType, distinctId },
+        ...(alias !== undefined ? { configuration: alias } : {}),
+        ...(Object.keys(properties).length > 0
+          ? { context: { schemaVersion: 1 as const, properties } }
+          : {}),
+        ...(cached ? { knownHash: cached.response.hash } : {}),
+      };
+      const result = await this.deps.api.evaluateConfiguration(body);
+      return this.handle(result, cacheKey, cached, alias);
+    });
   }
 
   private handle(
-    result: FetchResult<ConfigurationResponse>,
+    result: ConfigurationResult,
     cacheKey: string,
     cached: CacheEntry | undefined,
     alias: string | undefined
   ): EvaluatedConfiguration {
     switch (result.status) {
       case "updated":
-        this.store(cacheKey, { response: result.data, fetchedAt: Date.now() });
+        this.cache.set(cacheKey, { response: result.data, fetchedAt: Date.now() });
         return this.fromResponse("evaluated", result.data, undefined);
       case "notModified":
         if (cached) {
-          this.store(cacheKey, { response: cached.response, fetchedAt: Date.now() });
+          this.cache.set(cacheKey, { response: cached.response, fetchedAt: Date.now() });
           return this.fromResponse("evaluated", cached.response, undefined);
         }
         return this.fallback(alias, "unexpected 304 without a cached evaluation");
@@ -298,16 +313,7 @@ export class ServerConfigsService implements ServerConfigs {
             ? "configs.evaluate: this environment has no primary configuration."
             : `configs.evaluate: configuration '${alias}' was not found in this environment.`
         );
-        return new Evaluated(
-          "unavailable",
-          undefined,
-          null,
-          null,
-          null,
-          [],
-          result.error,
-          this.deps.logger
-        );
+        return new Evaluated("unavailable", undefined, undefined, result.error, this.deps.logger);
       case "failed":
         this.deps.logger.warn(`configs.evaluate failed (${result.error}); using a fallback value.`);
         if (cached) return this.fromResponse("stale", cached.response, result.error);
@@ -327,10 +333,12 @@ export class ServerConfigsService implements ServerConfigs {
     return new Evaluated(
       source,
       response.configuration,
-      response.configurationId,
-      response.name,
-      response.hash,
-      Object.freeze([...(response.experiments ?? [])]),
+      {
+        configurationId: response.configurationId,
+        name: response.name,
+        hash: response.hash,
+        experiments: response.experiments ?? [],
+      },
       error,
       this.deps.logger
     );
@@ -338,41 +346,17 @@ export class ServerConfigsService implements ServerConfigs {
 
   /** The base configuration from the snapshot, when it has one for this alias (or the primary). */
   private fallback(alias: string | undefined, error: string): EvaluatedConfiguration {
-    const state = this.deps.snapshot.current;
-    const info = this.deps.snapshot.configurationInfo();
-    const match =
-      alias === undefined
-        ? info.find((entry) => entry.isPrimary)
-        : info.find((entry) => entry.alias === toAliasSlug(alias));
-    const document = match?.alias ? state?.configurations.get(match.alias) : undefined;
-    if (!match || document === undefined) {
-      return new Evaluated("unavailable", undefined, null, null, null, [], error, this.deps.logger);
-    }
-    return new Evaluated(
-      "base",
-      document,
-      match.id,
-      match.name,
-      match.hash,
-      [],
-      error,
-      this.deps.logger
+    const { snapshot, logger } = this.deps;
+    const key = alias === undefined ? undefined : toAliasSlug(alias);
+    const match = snapshot.configurations.find((entry) =>
+      key === undefined ? entry.isPrimary : entry.alias === key
     );
-  }
-
-  private store(key: string, entry: CacheEntry): void {
-    if (this.maxEntries === 0 || this.deps.cacheTtlMs <= 0) return;
-    this.touch(key, entry);
-    while (this.cache.size > this.maxEntries) {
-      const oldest = this.cache.keys().next().value;
-      if (oldest === undefined) break;
-      this.cache.delete(oldest);
+    const document = match?.alias ? snapshot.store.document(match.alias) : undefined;
+    if (!match || document === undefined) {
+      return new Evaluated("unavailable", undefined, undefined, error, logger);
     }
-  }
-
-  private touch(key: string, entry: CacheEntry): void {
-    this.cache.delete(key);
-    this.cache.set(key, entry);
+    const meta = { configurationId: match.id, name: match.name, hash: match.hash, experiments: [] };
+    return new Evaluated("base", document, meta, error, logger);
   }
 
   private listen<T>(

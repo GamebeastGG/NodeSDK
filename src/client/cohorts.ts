@@ -1,7 +1,11 @@
 import type { ApiClient } from "../shared/api";
 import type { Logger } from "../shared/logger";
+import { LruCache } from "../shared/lruCache";
+import { SingleFlight } from "../shared/singleFlight";
 
 const CACHE_TTL_MS = 60_000;
+/** A browser checks a handful of cohorts for a handful of identities; this is a loose bound. */
+const CACHE_MAX_ENTRIES = 500;
 
 export interface ClientCohorts {
   /**
@@ -15,69 +19,57 @@ export interface ClientCohorts {
   isMember(cohortName: string): Promise<boolean>;
 }
 
-export class ClientCohortsService implements ClientCohorts {
-  private readonly cache = new Map<string, { isMember: boolean; fetchedAt: number }>();
-  private readonly inFlight = new Map<string, Promise<boolean>>();
-  private generation = 0;
-  private disabled = false;
-
-  constructor(
-    private readonly api: ApiClient,
-    private readonly logger: Logger,
-    private readonly distinctId: () => string
-  ) {}
-
+export interface ClientCohortsDeps {
+  api: ApiClient;
+  logger: Logger;
+  distinctId: () => string;
   /** Server-side rendering: answer `false` without calling the backend. */
-  disable(): void {
-    this.disabled = true;
-  }
+  inert: boolean;
+}
+
+/**
+ * Cached and in-flight checks are keyed by (user, cohort), so an identity change needs no
+ * invalidation: the new user simply misses the cache, and a check still in flight for the previous
+ * user can only populate the previous user's entry.
+ */
+export class ClientCohortsService implements ClientCohorts {
+  private readonly cache = new LruCache<string, { isMember: boolean; fetchedAt: number }>(
+    CACHE_MAX_ENTRIES
+  );
+  private readonly inFlight = new SingleFlight<string, boolean>();
+
+  constructor(private readonly deps: ClientCohortsDeps) {}
 
   isMember(cohortName: string): Promise<boolean> {
-    if (this.disabled) return Promise.resolve(false);
+    if (this.deps.inert) return Promise.resolve(false);
     if (typeof cohortName !== "string" || cohortName.trim() === "") {
-      this.logger.error("cohorts.isMember requires a cohort name.");
+      this.deps.logger.error("cohorts.isMember requires a cohort name.");
       return Promise.resolve(false);
     }
     const name = cohortName.trim();
+    const userId = this.deps.distinctId();
+    const key = `${userId}\u0000${name}`;
 
-    const cached = this.cache.get(name);
-    if (cached && Date.now() - cached.fetchedAt < CACHE_TTL_MS)
+    const cached = this.cache.get(key);
+    if (cached && Date.now() - cached.fetchedAt < CACHE_TTL_MS) {
       return Promise.resolve(cached.isMember);
-
-    const existing = this.inFlight.get(name);
-    if (existing) return existing;
-
-    const promise = this.check(name).finally(() => {
-      if (this.inFlight.get(name) === promise) this.inFlight.delete(name);
-    });
-    this.inFlight.set(name, promise);
-    return promise;
+    }
+    return this.inFlight.run(key, () => this.check(key, name, userId));
   }
 
-  /** Membership is per user: forget everything cached for the previous one. */
-  onIdentityChanged(): void {
-    this.generation += 1;
-    this.cache.clear();
-    this.inFlight.clear();
-  }
-
-  private async check(name: string): Promise<boolean> {
-    const generation = this.generation;
-    const userId = this.distinctId();
-    const result = await this.api.checkCohortMembership(name, [userId]);
-
-    if (result.status !== "updated") {
-      const reason = result.status === "notModified" ? "unexpected 304" : result.error;
-      this.logger.warn(`Cohort check for '${name}' failed (${reason}); treating as not a member.`);
+  private async check(key: string, name: string, userId: string): Promise<boolean> {
+    const result = await this.deps.api.checkCohortMembership(name, [userId]);
+    if (result.status === "failed") {
+      this.deps.logger.warn(
+        `Cohort check for '${name}' failed (${result.error}); treating as not a member.`
+      );
       return false;
     }
-
     if (!result.data.cohortExists) {
-      this.logger.warnOnce(`cohort-missing:${name}`, `Cohort '${name}' does not exist.`);
+      this.deps.logger.warnOnce(`cohort-missing:${name}`, `Cohort '${name}' does not exist.`);
     }
     const isMember = result.data.users.some((entry) => entry.userId === userId && entry.isMember);
-    // Identity changed mid-request: report the answer, but do not cache it for the new user.
-    if (generation === this.generation) this.cache.set(name, { isMember, fetchedAt: Date.now() });
+    this.cache.set(key, { isMember, fetchedAt: Date.now() });
     return isMember;
   }
 }

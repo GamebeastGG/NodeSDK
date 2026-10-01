@@ -648,6 +648,15 @@ describe("GamebeastServer cohorts", () => {
 });
 
 describe("GamebeastServer markers and lifecycle", () => {
+  it("treats a fractional marker batch size below 1 as 1", async () => {
+    const backend = new FakeBackend().on("POST /sdk/v1/markers", { body: {} });
+    const { server } = createServer(backend, { markers: { maxBatchSize: 0.5 } });
+    server.markers.send("a");
+    server.markers.send("b");
+    await server.flush();
+    expect(backend.requestsTo("POST /sdk/v1/markers")).toHaveLength(2);
+  });
+
   it("sends user and server-level markers with the server id", async () => {
     const backend = new FakeBackend().on("POST /sdk/v1/markers", {
       body: { ingestedMarkersCount: 2 },

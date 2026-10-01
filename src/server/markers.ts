@@ -4,6 +4,7 @@ import type { Logger } from "../shared/logger";
 import type { MarkerFields, MarkerProperties } from "../shared/markers";
 import { buildMarker } from "../shared/markers";
 import { MarkerQueue } from "../shared/markerQueue";
+import { positiveNumber } from "../shared/options";
 
 export interface MarkerQueueSettings {
   /** Markers per request. Default 100. */
@@ -47,9 +48,9 @@ export class ServerMarkersService implements ServerMarkers {
     this.queue = new MarkerQueue({
       send: (markers) => api.postMarkers(markers),
       logger,
-      maxBatchSize: positive(settings.maxBatchSize, 100),
-      flushIntervalMs: positive(settings.flushIntervalMs, 5_000),
-      maxBufferedMarkers: positive(settings.maxBufferedMarkers, 10_000),
+      maxBatchSize: positiveInteger(settings.maxBatchSize, 100),
+      flushIntervalMs: positiveInteger(settings.flushIntervalMs, 5_000),
+      maxBufferedMarkers: positiveInteger(settings.maxBufferedMarkers, 10_000),
     });
   }
 
@@ -81,8 +82,7 @@ export class ServerMarkersService implements ServerMarkers {
   }
 }
 
-function positive(value: number | undefined, fallback: number): number {
-  return typeof value === "number" && Number.isFinite(value) && value > 0
-    ? Math.floor(value)
-    : fallback;
+/** At least 1, so a fractional setting below 1 cannot produce an empty batch or a zero cap. */
+function positiveInteger(value: number | undefined, fallback: number): number {
+  return Math.max(1, Math.floor(positiveNumber(value) ?? fallback));
 }

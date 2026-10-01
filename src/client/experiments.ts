@@ -1,4 +1,5 @@
 import type { ApiClient } from "../shared/api";
+import { deepEqual } from "../shared/json";
 import type { Unsubscribe } from "../shared/listeners";
 import { Listeners } from "../shared/listeners";
 import type { Logger } from "../shared/logger";
@@ -10,6 +11,13 @@ import type {
 
 /** After a non-retryable catalog failure (e.g. the key lacks `experiments:read`), wait this long. */
 const CATALOG_FAILURE_BACKOFF_MS = 10 * 60_000;
+/** After a transient catalog failure, wait this long. */
+const CATALOG_RETRY_BACKOFF_MS = 30_000;
+/**
+ * An unknown id with an unchanged catalog means the experiment ended or is private: wait this
+ * long before asking again rather than re-requesting on every evaluation.
+ */
+const CATALOG_UNCHANGED_BACKOFF_MS = 60_000;
 
 /**
  * An experiment the current user is enrolled in. Values read through `configs` already include
@@ -74,8 +82,6 @@ export class ClientExperimentsService implements ClientExperiments {
 
   /** Called by the configs service with the assignments on each evaluated response. */
   report(configKey: string, assignments: ExperimentAssignmentMetadata[]): void {
-    const previous = this.byConfiguration.get(configKey);
-    if (previous && sameAssignments(previous, assignments)) return;
     this.byConfiguration.set(configKey, [...assignments]);
     this.rebuild();
     void this.ensureCatalog();
@@ -110,15 +116,11 @@ export class ClientExperimentsService implements ClientExperiments {
           this.rebuild();
           break;
         case "notModified":
-          // Still unknown with an unchanged catalog: the experiment ended or is private. Wait
-          // before asking again rather than re-requesting on every evaluation.
-          this.catalogRetryNotBefore = Date.now() + 60_000;
+          this.catalogRetryNotBefore = Date.now() + CATALOG_UNCHANGED_BACKOFF_MS;
           break;
-        case "notFound":
         case "failed": {
-          const retryable = result.status === "failed" && result.retryable;
           this.catalogRetryNotBefore =
-            Date.now() + (retryable ? 30_000 : CATALOG_FAILURE_BACKOFF_MS);
+            Date.now() + (result.retryable ? CATALOG_RETRY_BACKOFF_MS : CATALOG_FAILURE_BACKOFF_MS);
           this.logger.warnOnce(
             "experiment-catalog",
             `Experiment names are unavailable (${result.error}); assignments are reported without them.`
@@ -157,44 +159,9 @@ export class ClientExperimentsService implements ClientExperiments {
       (a, b) => a.experimentId - b.experimentId || a.configuration.localeCompare(b.configuration)
     );
 
-    if (sameSnapshot(this.current, next)) return;
+    // Re-reported assignments usually match what is already published; only emit real changes.
+    if (deepEqual(this.current, next)) return;
     this.current = Object.freeze(next.map((entry) => Object.freeze(entry)));
     this.listeners.emit(this.current);
   }
-}
-
-function sameAssignments(
-  a: ExperimentAssignmentMetadata[],
-  b: ExperimentAssignmentMetadata[]
-): boolean {
-  return (
-    a.length === b.length &&
-    a.every(
-      (entry, index) =>
-        entry.experimentId === b[index]?.experimentId &&
-        entry.groupId === b[index]?.groupId &&
-        entry.assignmentVersion === b[index]?.assignmentVersion
-    )
-  );
-}
-
-function sameSnapshot(
-  a: readonly ExperimentAssignment[],
-  b: readonly ExperimentAssignment[]
-): boolean {
-  return (
-    a.length === b.length &&
-    a.every((entry, index) => {
-      const other = b[index];
-      return (
-        other !== undefined &&
-        entry.experimentId === other.experimentId &&
-        entry.groupId === other.groupId &&
-        entry.experimentName === other.experimentName &&
-        entry.groupLabel === other.groupLabel &&
-        entry.configuration === other.configuration &&
-        entry.source === other.source
-      );
-    })
-  );
 }

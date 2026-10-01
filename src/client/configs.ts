@@ -2,12 +2,11 @@ import type { ApiClient } from "../shared/api";
 import { ConfigStore, parsePathOrLog } from "../shared/configStore";
 import { toAliasSlug } from "../shared/environment";
 import type { ConfigPath } from "../shared/json";
+import { Latch } from "../shared/latch";
 import type { Unsubscribe } from "../shared/listeners";
-import { Listeners } from "../shared/listeners";
 import type { Logger } from "../shared/logger";
-import { describeError } from "../shared/logger";
 import type { TimerHandle } from "../shared/timers";
-import { startInterval, startTimeout, stopTimer } from "../shared/timers";
+import { startInterval, stopTimer } from "../shared/timers";
 import { SDK_VERSION } from "../shared/version";
 import type {
   ConfigurationResponse,
@@ -92,14 +91,14 @@ export interface ClientConfigsDeps {
   distinctId: () => string;
   properties: () => Record<string, ContextValue>;
   reportAssignments: (configKey: string, assignments: ExperimentAssignmentMetadata[]) => void;
+  /** Server-side rendering: serve fallbacks and never fetch. */
+  inert: boolean;
 }
 
 export class ClientConfigsService implements ClientConfigs {
   private readonly store: ConfigStore;
   private readonly states = new Map<string, ConfigState>();
-  private readonly readyListeners: Listeners<void>;
-  private readonly readyWaiters = new Set<(value: boolean) => void>();
-  private ready_ = false;
+  private readonly readiness: Latch;
   private generation = 0;
   private lastRefreshAt = 0;
   private refreshTimer: TimerHandle | undefined;
@@ -111,7 +110,7 @@ export class ClientConfigsService implements ClientConfigs {
     declared: readonly string[]
   ) {
     this.store = new ConfigStore(deps.logger);
-    this.readyListeners = new Listeners<void>(deps.logger, "OnReady");
+    this.readiness = new Latch(deps.logger, "OnReady");
     for (const alias of declared) {
       const trimmed = typeof alias === "string" ? alias.trim() : "";
       const key = toAliasSlug(trimmed);
@@ -122,10 +121,13 @@ export class ClientConfigsService implements ClientConfigs {
       this.register(trimmed, key, true);
     }
     this.checkReady();
+    // Server-side rendering: born stopped, so reads return fallbacks and nothing is fetched.
+    if (deps.inert) this.shutdown();
   }
 
   /** Begin fetching and schedule background refreshes. */
   start(): void {
+    if (this.stopped) return;
     void this.refreshAll();
     if (this.deps.refreshIntervalMs > 0) {
       this.refreshTimer = startInterval(() => {
@@ -136,7 +138,7 @@ export class ClientConfigsService implements ClientConfigs {
   }
 
   get isReady(): boolean {
-    return this.ready_;
+    return this.readiness.isReady;
   }
 
   get<T = JsonValue>(path: ConfigPath): T | undefined;
@@ -170,40 +172,11 @@ export class ClientConfigsService implements ClientConfigs {
       this.deps.logger.error("configs.onReady requires a callback.");
       return () => undefined;
     }
-    if (this.ready_) {
-      try {
-        callback();
-      } catch (error) {
-        this.deps.logger.error(`OnReady callback threw: ${describeError(error)}`);
-      }
-      return () => undefined;
-    }
-    let unsubscribe: Unsubscribe = () => undefined;
-    unsubscribe = this.readyListeners.add(() => {
-      unsubscribe();
-      callback();
-    });
-    return unsubscribe;
+    return this.readiness.onReady(callback);
   }
 
   ready(options: { timeoutMs?: number } = {}): Promise<boolean> {
-    if (this.ready_) return Promise.resolve(true);
-    if (this.stopped) return Promise.resolve(false);
-    return new Promise((resolve) => {
-      let timer: TimerHandle | undefined;
-      let unsubscribe: Unsubscribe = () => undefined;
-      const finish = (value: boolean) => {
-        stopTimer(timer);
-        unsubscribe();
-        this.readyWaiters.delete(finish);
-        resolve(value);
-      };
-      unsubscribe = this.readyListeners.add(() => finish(true));
-      this.readyWaiters.add(finish);
-      if (options.timeoutMs !== undefined) {
-        timer = startTimeout(() => finish(this.ready_), options.timeoutMs);
-      }
-    });
+    return this.readiness.wait(options.timeoutMs);
   }
 
   /**
@@ -254,9 +227,8 @@ export class ClientConfigsService implements ClientConfigs {
     this.stopped = true;
     stopTimer(this.refreshTimer);
     stopTimer(this.retryTimer);
-    for (const finish of [...this.readyWaiters]) finish(this.ready_);
+    this.readiness.settle(false);
     this.store.clearListeners();
-    this.readyListeners.clear();
   }
 
   // --- internals ------------------------------------------------------------------------------
@@ -409,13 +381,11 @@ export class ClientConfigsService implements ClientConfigs {
   }
 
   private checkReady(): void {
-    if (this.ready_) return;
+    if (this.stopped || this.readiness.isReady) return;
     for (const state of this.states.values()) {
       if (state.requiredForReady && !state.loaded && !state.permanentFailure) return;
     }
-    this.ready_ = true;
-    this.readyListeners.emit();
-    this.readyListeners.clear();
+    this.readiness.settle(true);
   }
 
   private cacheKey(key: string): string {

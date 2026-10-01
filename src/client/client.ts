@@ -3,7 +3,7 @@ import type { Properties } from "../shared/context";
 import { sanitizeProperties } from "../shared/context";
 import type { Logger } from "../shared/logger";
 import type { BaseOptions } from "../shared/options";
-import { resolveBaseOptions } from "../shared/options";
+import { durationMs, resolveBaseOptions } from "../shared/options";
 import type { ContextValue } from "../shared/wire";
 import type { ClientCohorts } from "./cohorts";
 import { ClientCohortsService } from "./cohorts";
@@ -108,7 +108,6 @@ export class GamebeastClient {
   private readonly configsService: ClientConfigsService;
   private readonly markersService: ClientMarkersService;
   private readonly experimentsService: ClientExperimentsService;
-  private readonly cohortsService: ClientCohortsService;
   private readonly appVersion: string | undefined;
   private identity: Identity;
   private userProperties: Record<string, ContextValue>;
@@ -130,20 +129,23 @@ export class GamebeastClient {
     this.identity = this.resolveInitialIdentity(options.distinctId);
     this.userProperties = sanitizeProperties(options.properties, this.logger);
 
-    const sessionMinutes = options.sessionTimeoutMinutes ?? 30;
+    // Rendering on the server: there is no user here, only an anonymous id minted per render. Every
+    // service is built inert (reads return fallbacks, markers are dropped) and nothing is started.
+    const inert = isServerSideRender();
+
     this.session = new SessionTracker(
       this.storage,
-      Number.isFinite(sessionMinutes) && sessionMinutes > 0 ? sessionMinutes * 60_000 : 0
+      durationMs(options.sessionTimeoutMinutes, 30, 60_000)
     );
 
     this.experimentsService = new ClientExperimentsService(this.api, this.logger);
-    this.cohortsService = new ClientCohortsService(
-      this.api,
-      this.logger,
-      () => this.identity.distinctId
-    );
+    this.cohorts = new ClientCohortsService({
+      api: this.api,
+      logger: this.logger,
+      distinctId: () => this.identity.distinctId,
+      inert,
+    });
 
-    const refreshSeconds = options.configRefreshIntervalSeconds ?? 60;
     this.configsService = new ClientConfigsService(
       {
         api: this.api,
@@ -151,40 +153,36 @@ export class GamebeastClient {
         storage: this.storage,
         cachePrefix: prefix,
         appVersion: this.appVersion,
-        refreshIntervalMs:
-          Number.isFinite(refreshSeconds) && refreshSeconds > 0 ? refreshSeconds * 1000 : 0,
+        refreshIntervalMs: durationMs(options.configRefreshIntervalSeconds, 60, 1000),
         distinctId: () => this.identity.distinctId,
         properties: () => this.evaluationProperties(),
         reportAssignments: (key, assignments) => this.experimentsService.report(key, assignments),
+        inert,
       },
       options.configurations ?? []
     );
 
-    this.markersService = new ClientMarkersService(
-      this.api,
-      this.logger,
-      this.storage,
-      `${prefix}:markers`,
-      () => ({ distinctId: this.identity.distinctId, sessionId: this.session.touch() })
-    );
+    this.markersService = new ClientMarkersService({
+      api: this.api,
+      logger: this.logger,
+      storage: this.storage,
+      storageKey: `${prefix}:markers`,
+      stamp: () => ({ distinctId: this.identity.distinctId, sessionId: this.session.touch() }),
+      inert,
+    });
 
     this.configs = this.configsService;
     this.markers = this.markersService;
     this.experiments = this.experimentsService;
-    this.cohorts = this.cohortsService;
 
-    this.detachPageEvents = this.attachPageEvents();
-    if (isServerSideRender()) {
-      // Rendering on the server: there is no user here, only an anonymous id minted per render.
-      // Stay inert (reads return fallbacks, markers are dropped) and let the browser do the work.
-      this.configsService.shutdown();
-      this.markersService.disable();
-      this.cohortsService.disable();
+    if (inert) {
+      this.detachPageEvents = () => undefined;
       this.logger.debug(
         "Running outside a browser: GamebeastClient is inert here. Use @gamebeast/sdk/server on servers."
       );
       return;
     }
+    this.detachPageEvents = this.attachPageEvents();
     this.markersService.restorePersisted();
     this.configsService.start();
 
@@ -269,7 +267,6 @@ export class GamebeastClient {
 
   private setIdentity(identity: Identity): void {
     this.identity = identity;
-    this.cohortsService.onIdentityChanged();
     this.experimentsService.onIdentityChanged();
     this.configsService.onIdentityChanged();
     this.logger.debug(`Identity changed to '${identity.distinctId}'.`);

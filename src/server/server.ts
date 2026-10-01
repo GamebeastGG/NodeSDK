@@ -1,6 +1,6 @@
 import type { Logger } from "../shared/logger";
 import type { BaseOptions } from "../shared/options";
-import { resolveBaseOptions } from "../shared/options";
+import { durationMs, positiveNumber, resolveBaseOptions } from "../shared/options";
 import { uuidv4 } from "../shared/uuid";
 import type { ServerCohorts } from "./cohorts";
 import { ServerCohortsService } from "./cohorts";
@@ -81,23 +81,18 @@ export class GamebeastServer {
     this.logger = base.logger;
     this.serverId = serverId;
 
-    const pollSeconds = options.pollIntervalSeconds;
     this.snapshot = new SnapshotService({
       api: base.api,
       logger: this.logger,
       autoRefresh: options.autoRefresh !== false,
-      pollIntervalSeconds:
-        typeof pollSeconds === "number" && Number.isFinite(pollSeconds) && pollSeconds > 0
-          ? pollSeconds
-          : undefined,
+      pollIntervalSeconds: positiveNumber(options.pollIntervalSeconds),
     });
 
-    const cacheSeconds = options.evaluationCacheSeconds ?? 30;
     this.configsService = new ServerConfigsService({
       api: base.api,
       logger: this.logger,
       snapshot: this.snapshot,
-      cacheTtlMs: Number.isFinite(cacheSeconds) && cacheSeconds > 0 ? cacheSeconds * 1000 : 0,
+      cacheTtlMs: durationMs(options.evaluationCacheSeconds, 30, 1000),
     });
     this.markersService = new ServerMarkersService(base.api, this.logger, options.markers);
 

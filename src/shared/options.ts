@@ -103,3 +103,20 @@ export function resolveBaseOptions(
 
   return { logger, environment, api };
 }
+
+/** `value` when it is a finite number above zero, otherwise `undefined`. */
+export function positiveNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : undefined;
+}
+
+/**
+ * A duration option in `unitMs` units, as milliseconds: `defaultValue` when omitted, and `0`
+ * (disabled) for `0` or any unusable value.
+ */
+export function durationMs(
+  value: number | undefined,
+  defaultValue: number,
+  unitMs: number
+): number {
+  return (positiveNumber(value ?? defaultValue) ?? 0) * unitMs;
+}
