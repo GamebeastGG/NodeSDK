@@ -3,7 +3,7 @@ import { GamebeastServer } from "../src/server";
 import type { GamebeastServerOptions } from "../src/server";
 import { GamebeastError } from "../src/shared/errors";
 import { SDK_VERSION } from "../src/shared/version";
-import { FakeBackend, evaluated, silentLogger } from "./helpers";
+import { FakeBackend, configurationResponse, evaluated, silentLogger } from "./helpers";
 
 const servers: GamebeastServer[] = [];
 
@@ -579,6 +579,50 @@ describe("GamebeastServer experiments.assign", () => {
   });
 });
 
+describe("GamebeastServer response contract", () => {
+  function evaluateBackend(body: unknown) {
+    return new FakeBackend()
+      .on("GET /sdk/v2/bootstrap", { body: bootstrap([gameSettings]) })
+      .on("POST /sdk/v2/configurations/evaluate", { body });
+  }
+
+  it("keeps working when the backend adds fields", async () => {
+    const backend = evaluateBackend(configurationResponse({ PlayerSpeed: 20 }, { addedLater: 1 }));
+    const { server, lines } = createServer(backend);
+    const result = await server.configs.evaluate({
+      distinctId: "alice",
+      configuration: "GameSettings",
+    });
+    expect(result.source).toBe("evaluated");
+    expect(result.get("PlayerSpeed")).toBe(20);
+    expect(lines.some((line) => line.message.includes("API contract"))).toBe(false);
+  });
+
+  it("falls back, and names the field, when a response field has the wrong type", async () => {
+    const backend = evaluateBackend(
+      configurationResponse({ PlayerSpeed: 20 }, { experiments: [{ experimentId: "5" }] })
+    );
+    const { server, lines } = createServer(backend);
+    const result = await server.configs.evaluate({
+      distinctId: "alice",
+      configuration: "GameSettings",
+    });
+    expect(result.source).not.toBe("evaluated");
+    expect(result.error).toMatch(/did not match the API contract: experiments\.0\.experimentId/);
+    const contractWarnings = lines.filter((line) =>
+      line.message.startsWith("The configuration response did not match the API contract")
+    );
+    expect(contractWarnings).toHaveLength(1);
+    expect(contractWarnings[0]?.level).toBe("warn");
+
+    // Logged once per endpoint, not once per request.
+    await server.configs.evaluate({ distinctId: "bob", configuration: "GameSettings" });
+    expect(
+      lines.filter((line) => line.message.startsWith("The configuration response did not match"))
+    ).toHaveLength(1);
+  });
+});
+
 describe("GamebeastServer cohorts", () => {
   it("coalesces concurrent checks into one request and caches results", async () => {
     const backend = new FakeBackend().on("POST /sdk/v1/cohorts/membership", (request) => {
@@ -616,12 +660,20 @@ describe("GamebeastServer cohorts", () => {
     expect(backend.requestsTo("POST /sdk/v1/cohorts/membership")).toHaveLength(1);
   });
 
-  it("accepts the documented bare-array response shape", async () => {
+  it("rejects a response that does not match the contract and says why", async () => {
     const backend = new FakeBackend().on("POST /sdk/v1/cohorts/membership", {
       body: [{ userId: 42, isMember: true }],
     });
-    const { server } = createServer(backend);
-    expect(await server.cohorts.isMember("whales", "42")).toBe(true);
+    const { server, lines } = createServer(backend);
+    expect(await server.cohorts.isMember("whales", "42")).toBe(false);
+    await expect(server.cohorts.getMembership("whales", ["42"])).rejects.toThrow(
+      /did not match the API contract/
+    );
+    const contractWarnings = lines.filter((line) =>
+      line.message.startsWith("The cohort membership response did not match the API contract")
+    );
+    expect(contractWarnings).toHaveLength(1);
+    expect(contractWarnings[0]?.message).toMatch(/expected object, received array/);
   });
 
   it("treats a missing cohort as not a member and warns once", async () => {

@@ -1,3 +1,5 @@
+import { BULK_ASSIGN_MAX_IDS } from "@gamebeast/sdk-contract/core";
+
 import type { ApiClient } from "../shared/api";
 import type { Properties } from "../shared/context";
 import { sanitizeProperties } from "../shared/context";
@@ -13,7 +15,7 @@ import type {
 import type { SnapshotService } from "./snapshot";
 
 /** Backend cap on units per bulk request. */
-export const BULK_ASSIGN_MAX_UNITS = 250;
+export const BULK_ASSIGN_MAX_UNITS = BULK_ASSIGN_MAX_IDS;
 
 /** A unit for `experiments.assign`: an id, or an id with its own targeting properties. */
 export type AssignUnit = string | { distinctId: string; properties?: Properties };

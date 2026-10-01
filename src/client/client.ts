@@ -13,7 +13,7 @@ import type { ClientExperiments } from "./experiments";
 import { ClientExperimentsService } from "./experiments";
 import type { Identity } from "./identity";
 import { SessionTracker, anonymousIdentity } from "./identity";
-import { normalizeDistinctId } from "../shared/ids";
+import { DISTINCT_ID_MAX_LENGTH, normalizeDistinctId } from "../shared/ids";
 import type { ClientMarkers } from "./markers";
 import { ClientMarkersService } from "./markers";
 import type { KeyValueStorage } from "./storage";
@@ -215,7 +215,9 @@ export class GamebeastClient {
   identify(distinctId: string): void {
     const normalized = normalizeDistinctId(distinctId);
     if (normalized === undefined) {
-      this.logger.error("identify requires a non-empty distinct id of at most 256 characters.");
+      this.logger.error(
+        `identify requires a non-empty distinct id of at most ${DISTINCT_ID_MAX_LENGTH} characters.`
+      );
       return;
     }
     if (!this.identity.isAnonymous && normalized === this.identity.distinctId) return;

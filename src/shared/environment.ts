@@ -4,6 +4,7 @@
  *
  * The set of environments is data, not an enum: projects may define their own (e.g. `staging`).
  */
+import { toAliasSlug } from "@gamebeast/sdk-contract/core";
 
 export const PRODUCTION_ENVIRONMENT = "production";
 export const DEVELOPMENT_ENVIRONMENT = "development";
@@ -12,15 +13,8 @@ const ALIAS_SYNONYMS: Record<string, string> = {
   studio: DEVELOPMENT_ENVIRONMENT,
 };
 
-/** Mirror of core-backend `toAliasSlug`: lowercase, spaces to dashes, strip the rest, trim dashes. */
-export function toAliasSlug(value: string): string {
-  return value
-    .toLowerCase()
-    .replace(/\s+/g, "-")
-    .replace(/[^a-z0-9-]/g, "")
-    .replace(/-+/g, "-")
-    .replace(/^-+|-+$/g, "");
-}
+/** The backend's own alias slugging, from the SDK contract (no Zod: safe for the browser bundle). */
+export { toAliasSlug };
 
 /** Normalize a developer-supplied environment. Returns `undefined` for input that slugs to `""`. */
 export function normalizeEnvironment(input: string): string | undefined {
