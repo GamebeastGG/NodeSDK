@@ -11,6 +11,7 @@ import { ServerExperimentsService } from "./experiments";
 import type { MarkerQueueSettings, ServerMarkers } from "./markers";
 import { ServerMarkersService } from "./markers";
 import { SnapshotService } from "./snapshot";
+import { validateWithContract } from "./validation";
 
 export interface GamebeastServerOptions extends BaseOptions {
   /**
@@ -77,7 +78,10 @@ export class GamebeastServer {
       typeof options?.serverId === "string" && options.serverId.trim() !== ""
         ? options.serverId.trim()
         : uuidv4();
-    const base = resolveBaseOptions(options, "server", { serverId });
+    const base = resolveBaseOptions(options, "server", {
+      serverId,
+      validateResponse: validateWithContract,
+    });
     this.logger = base.logger;
     this.serverId = serverId;
 

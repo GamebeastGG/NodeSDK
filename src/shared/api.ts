@@ -13,6 +13,8 @@ import {
   sendRequest,
 } from "./http";
 import { toLegacyEnvironment } from "./environment";
+import type { Logger } from "./logger";
+import type { ResponseKind, ResponseTypes, ResponseValidator } from "./validation";
 import { SDK_VERSION } from "./version";
 import type {
   ActiveExperimentsResponse,
@@ -44,6 +46,12 @@ export interface ApiClientOptions {
   /** Appended to the `sdkversion` header, e.g. `web` → `js-web/1.0.0`. */
   flavor: "web" | "server";
   timeoutMs?: number;
+  logger?: Logger;
+  /**
+   * Checks 200 bodies against the backend contract. When set it replaces the structural decoders
+   * below, and a body that fails it is treated like a failed request, so the last good data is kept.
+   */
+  validateResponse?: ResponseValidator;
 }
 
 /** A request the backend did not satisfy. */
@@ -68,7 +76,10 @@ export type ConditionalResult<T> =
 export type ConfigurationResult =
   ConditionalResult<ConfigurationResponse> | { status: "notFound"; error: string };
 
-/** Turns a response body into `T`, or `undefined` when it does not have the expected shape. */
+/**
+ * Structural fallback used when no contract validator is configured (the browser client, which
+ * does not bundle the schemas): turns a body into `T`, or `undefined` when it is not safe to read.
+ */
 type Decoder<T> = (body: unknown) => T | undefined;
 
 interface RequestSpec {
@@ -137,22 +148,39 @@ const decodeBulkAssign: Decoder<BulkAssignResponse> = (body) =>
     ? { assignments: body.assignments as BulkAssignResponse["assignments"] }
     : undefined;
 
-/**
- * Accepts both the served shape (`{ cohortExists, users: [...] }`) and the documented bare array,
- * keeping only well-formed entries.
- */
+/** Keeps only well-formed entries. */
 const decodeCohortMembership: Decoder<CohortMembershipResponse> = (body) => {
-  const rawUsers: unknown = Array.isArray(body) ? body : isObject(body) ? body.users : undefined;
-  if (!Array.isArray(rawUsers)) return undefined;
+  if (!isObject(body) || typeof body.cohortExists !== "boolean" || !Array.isArray(body.users))
+    return undefined;
   const users: CohortMembershipResponse["users"] = [];
-  for (const entry of rawUsers) {
-    if (isObject(entry) && entry.userId !== undefined && typeof entry.isMember === "boolean") {
-      users.push({ userId: String(entry.userId), isMember: entry.isMember });
+  for (const entry of body.users) {
+    if (
+      isObject(entry) &&
+      typeof entry.userId === "string" &&
+      typeof entry.isMember === "boolean"
+    ) {
+      users.push({ userId: entry.userId, isMember: entry.isMember });
     }
   }
-  const cohortExists =
-    isObject(body) && typeof body.cohortExists === "boolean" ? body.cohortExists : true;
-  return { cohortExists, users };
+  return { cohortExists: body.cohortExists, users };
+};
+
+const DECODERS: { [K in ResponseKind]: Decoder<ResponseTypes[K]> } = {
+  configuration: decodeConfiguration,
+  status: decodeStatus,
+  bootstrap: decodeBootstrap,
+  activeExperiments: decodeActiveExperiments,
+  bulkAssign: decodeBulkAssign,
+  cohortMembership: decodeCohortMembership,
+};
+
+const RESPONSE_LABELS: { [K in ResponseKind]: string } = {
+  configuration: "configuration",
+  status: "status",
+  bootstrap: "bootstrap",
+  activeExperiments: "active experiments",
+  bulkAssign: "bulk assignment",
+  cohortMembership: "cohort membership",
 };
 
 function ifNoneMatch(knownHash: string | undefined): Record<string, string> {
@@ -211,7 +239,7 @@ export class ApiClient {
       path: "v2/bootstrap",
       headers: this.serverIdHeader(),
     });
-    return this.decode(response, decodeBootstrap, "bootstrap");
+    return this.decode(response, "bootstrap");
   }
 
   /** `GET /sdk/v2/status` — the bootstrap snapshot without documents, for polling. */
@@ -221,7 +249,7 @@ export class ApiClient {
       path: "v2/status",
       headers: { ...this.serverIdHeader(), ...ifNoneMatch(knownHash) },
     });
-    return this.decodeConditional(response, knownHash, decodeStatus, "status");
+    return this.decodeConditional(response, knownHash, "status");
   }
 
   /** `GET /sdk/v2/experiments/active` — active experiments (with changesets) for one unit type. */
@@ -235,12 +263,7 @@ export class ApiClient {
       headers: ifNoneMatch(knownHash),
       query: { "unit-type": unitType },
     });
-    return this.decodeConditional(
-      response,
-      knownHash,
-      decodeActiveExperiments,
-      "active experiments"
-    );
+    return this.decodeConditional(response, knownHash, "activeExperiments");
   }
 
   /** `POST /sdk/v2/experiments/assignments/bulk` — resolve assignments for up to 250 units. */
@@ -250,7 +273,7 @@ export class ApiClient {
       path: "v2/experiments/assignments/bulk",
       body,
     });
-    return this.decode(response, decodeBulkAssign, "bulk assignment");
+    return this.decode(response, "bulkAssign");
   }
 
   /** `POST /sdk/v1/cohorts/membership`. */
@@ -263,7 +286,7 @@ export class ApiClient {
       path: "v1/cohorts/membership",
       body: { cohortName, userIds },
     });
-    return this.decode(response, decodeCohortMembership, "cohort membership");
+    return this.decode(response, "cohortMembership");
   }
 
   // --- pipeline -------------------------------------------------------------------------------
@@ -308,25 +331,54 @@ export class ApiClient {
   }
 
   /** A plain request: success with a well-formed body, or a failure. */
-  private decode<T>(response: HttpResponse, decoder: Decoder<T>, what: string): Result<T> {
+  private decode<K extends ResponseKind>(
+    response: HttpResponse,
+    kind: K
+  ): Result<ResponseTypes[K]> {
     if (isNotModified(response)) {
       // Never asked for (no hash was sent); treat as a transient oddity.
       return { status: "failed", error: "unexpected 304", retryable: true };
     }
     if (!isSuccess(response)) return failed(response);
-    const data = decoder(response.body);
-    return data === undefined ? malformed(what) : { status: "ok", data };
+    return this.accept(kind, response.body);
+  }
+
+  /**
+   * Accept a 200 body as `kind`: checked against the contract when a validator is configured,
+   * otherwise decoded structurally. A body that fails is a retryable failure (callers keep their
+   * last good data), and the first mismatch per endpoint is logged with the reason, so a
+   * backend/SDK contract break shows up instead of reading as missing values.
+   */
+  private accept<K extends ResponseKind>(kind: K, body: unknown): Result<ResponseTypes[K]> {
+    const label = RESPONSE_LABELS[kind];
+    const validate = this.options.validateResponse;
+    if (validate === undefined) {
+      const data = DECODERS[kind](body);
+      return data === undefined ? malformed(label) : { status: "ok", data };
+    }
+
+    const result = validate(kind, body);
+    if (result.ok) return { status: "ok", data: result.data };
+    this.options.logger?.warnOnce(
+      `contract:${kind}`,
+      `The ${label} response did not match the API contract this SDK version expects ` +
+        `(${result.issues}). Keeping the last good data; upgrading @gamebeast/sdk may fix this.`
+    );
+    return {
+      status: "failed",
+      error: `${label} response did not match the API contract: ${result.issues}`,
+      retryable: true,
+    };
   }
 
   /** A hash-aware read. A matching hash answered with 200 rather than 304 is still "unchanged". */
-  private decodeConditional<T extends { hash: string }>(
+  private decodeConditional<K extends "configuration" | "status" | "activeExperiments">(
     response: HttpResponse,
     knownHash: string | undefined,
-    decoder: Decoder<T>,
-    what: string
-  ): ConditionalResult<T> {
+    kind: K
+  ): ConditionalResult<ResponseTypes[K]> {
     if (isNotModified(response)) return { status: "notModified" };
-    const result = this.decode(response, decoder, what);
+    const result = this.decode(response, kind);
     if (result.status === "failed") return result;
     if (knownHash !== undefined && result.data.hash === knownHash) return { status: "notModified" };
     return { status: "updated", data: result.data };
@@ -339,6 +391,6 @@ export class ApiClient {
     if (response.status === 404 || errorCodeOf(response.body) === "CONFIGURATION_NOT_FOUND") {
       return { status: "notFound", error: describeResponse(response) };
     }
-    return this.decodeConditional(response, knownHash, decodeConfiguration, "configuration");
+    return this.decodeConditional(response, knownHash, "configuration");
   }
 }

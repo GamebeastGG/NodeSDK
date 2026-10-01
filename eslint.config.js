@@ -29,5 +29,11 @@ export default tseslint.config(
     // The logger is the one place allowed to write to the console.
     files: ["src/shared/logger.ts"],
     rules: { "no-console": "off" },
+  },
+  {
+    // Build/CI scripts run on Node and report through the console.
+    files: ["scripts/**/*.mjs"],
+    languageOptions: { globals: { console: "readonly", process: "readonly" } },
+    rules: { "no-console": "off" },
   }
 );

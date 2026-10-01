@@ -8,6 +8,7 @@ import {
 } from "./environment";
 import type { GamebeastLogger } from "./logger";
 import { Logger } from "./logger";
+import type { ResponseValidator } from "./validation";
 
 /** Options shared by the browser and server SDKs. */
 export interface BaseOptions {
@@ -48,7 +49,7 @@ export interface ResolvedBase {
 export function resolveBaseOptions(
   options: BaseOptions,
   flavor: "web" | "server",
-  extras: { serverId?: string } = {}
+  extras: { serverId?: string; validateResponse?: ResponseValidator } = {}
 ): ResolvedBase {
   if (options === null || typeof options !== "object") {
     throw new TypeError("[Gamebeast] Options are required, e.g. { apiKey: '...' }.");
@@ -96,6 +97,8 @@ export function resolveBaseOptions(
     apiUrl: options.apiUrl ?? DEFAULT_API_URL,
     fetch: fetchImpl,
     flavor,
+    logger,
+    ...(extras.validateResponse !== undefined ? { validateResponse: extras.validateResponse } : {}),
     ...(options.projectId !== undefined ? { projectId: options.projectId } : {}),
     ...(extras.serverId !== undefined ? { serverId: extras.serverId } : {}),
     ...(options.requestTimeoutMs !== undefined ? { timeoutMs: options.requestTimeoutMs } : {}),

@@ -249,6 +249,9 @@ sent. Invalid entries are dropped with a warning instead of failing the call.
 ## Errors and logging
 
 The SDK never throws from reads, `send`, or `evaluate`. Problems are logged, and you get a fallback.
+The server SDK also checks every API response against the API contract. A response this SDK
+version can't read is logged once per endpoint, with the field that didn't match, and the last good
+data is kept. Upgrading `@gamebeast/sdk` usually fixes it.
 Misconfiguration (a missing `apiKey`, an invalid `environment`) throws from the constructor.
 Warnings and errors go to the console by default. Pass `logger` to route them elsewhere, and
 `debug: true` to also see requests, cache hits and refreshes.
@@ -275,7 +278,7 @@ npm run typecheck
 npm run lint
 npm run format:check
 npm run build          # tsup → dist (ESM + CJS + .d.ts)
-npm run check:package  # publint + are-the-types-wrong
+npm run check:package  # publint + are-the-types-wrong + browser-bundle import check
 ```
 
 ### The API contract
@@ -286,8 +289,10 @@ core-backend declares its `/sdk/*` routes with (`packages/sdk-contract` in servi
 with `toAliasSlug` and the request limits. `src/shared/wire.ts` only maps the SDK's names onto it.
 Don't define wire shapes here: change the contract, release it, then bump the dependency.
 
-The browser entry imports only type-only imports and `@gamebeast/sdk-contract/core` (no Zod), so
-the schemas stay out of its bundle.
+The server entry validates responses with the contract's Zod schemas (`src/server/validation.ts`).
+The browser entry imports only `@gamebeast/sdk-contract/core` (no Zod) and type-only imports, and
+does structural checks instead, so the schemas stay out of its bundle.
+`scripts/check-client-bundle.mjs` (part of `check:package`) fails the build if that changes.
 
 Publishing runs from a GitHub release (`.github/workflows/publish.yml`). `prepublishOnly` runs
 every check above first.
