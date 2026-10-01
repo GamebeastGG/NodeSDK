@@ -37,13 +37,11 @@ function browserLocalStorage(): KeyValueStorage | undefined {
 
 export class SafeStorage {
   private readonly backend: KeyValueStorage;
-  /** False when falling back to memory: nothing survives a reload. */
-  readonly persistent: boolean;
 
+  /** `null` keeps everything in memory; omitted uses `localStorage` where it works. */
   constructor(backend?: KeyValueStorage | null) {
     const resolved = backend === null ? undefined : (backend ?? browserLocalStorage());
     this.backend = resolved ?? new MemoryStorage();
-    this.persistent = resolved !== undefined;
   }
 
   getJson<T>(key: string): T | undefined {

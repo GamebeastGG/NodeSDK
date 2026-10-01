@@ -16,10 +16,6 @@ export class Listeners<T> {
     private readonly label: string
   ) {}
 
-  get size(): number {
-    return this.callbacks.size;
-  }
-
   add(callback: (value: T) => void): Unsubscribe {
     // Wrap so the same function subscribed twice gets two independent subscriptions.
     const entry = (value: T) => callback(value);

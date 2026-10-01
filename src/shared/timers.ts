@@ -18,10 +18,12 @@ export function startInterval(callback: () => void, intervalMs: number): TimerHa
   return unref(setInterval(callback, intervalMs) as unknown as TimerHandle);
 }
 
+/**
+ * Stop a timeout or an interval. `clearTimeout` clears both: browsers share one id pool between
+ * them (HTML spec) and Node's timer objects accept either function.
+ */
 export function stopTimer(handle: TimerHandle | undefined): void {
-  if (handle === undefined) return;
-  clearTimeout(handle);
-  clearInterval(handle as unknown as Parameters<typeof clearInterval>[0]);
+  if (handle !== undefined) clearTimeout(handle);
 }
 
 /** `base * (1 ± ratio)`, for spreading periodic requests from many instances. */

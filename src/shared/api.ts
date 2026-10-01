@@ -198,20 +198,6 @@ export class ApiClient {
     return this.toConfigurationResult(response, body.knownHash);
   }
 
-  /** `GET /sdk/v2/configurations` without identity — the unevaluated base configuration. */
-  async getBaseConfiguration(
-    alias: string | undefined,
-    knownHash: string | undefined
-  ): Promise<ConfigurationResult> {
-    const response = await this.send({
-      method: "GET",
-      path: "v2/configurations",
-      headers: ifNoneMatch(knownHash),
-      query: { configuration: alias },
-    });
-    return this.toConfigurationResult(response, knownHash);
-  }
-
   /** `GET /sdk/v2/bootstrap` — every configuration document plus active experiments. */
   async getBootstrap(): Promise<Result<BootstrapResponse>> {
     const response = await this.send({

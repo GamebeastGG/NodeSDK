@@ -45,6 +45,12 @@ function utf8Length(text: string): number {
   return text.length * 3;
 }
 
+function rejectionReason(entry: unknown): string {
+  return typeof entry === "object" && entry !== null && "reason" in entry
+    ? String(entry.reason)
+    : "unknown";
+}
+
 /**
  * Buffers markers and posts them to `/sdk/v1/markers` in batches.
  *
@@ -269,13 +275,13 @@ export class MarkerQueue {
   }
 
   private reportRejections(body: unknown): void {
-    const response = body as Partial<IngestMarkersResponse> | undefined;
-    if (!response || typeof response !== "object") return;
+    if (typeof body !== "object" || body === null) return;
+    const response = body as Record<keyof IngestMarkersResponse, unknown>;
     const rejected =
       typeof response.rejectedMarkersCount === "number" ? response.rejectedMarkersCount : 0;
     if (rejected > 0) {
       const reasons = Array.isArray(response.rejectedMarkers)
-        ? [...new Set(response.rejectedMarkers.map((entry) => String(entry?.reason)))].slice(0, 3)
+        ? [...new Set(response.rejectedMarkers.map(rejectionReason))].slice(0, 3)
         : [];
       const code = errorCodeOf(body);
       this.options.logger.warn(
