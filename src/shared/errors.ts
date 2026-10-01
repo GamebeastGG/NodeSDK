@@ -1,3 +1,5 @@
+import type { Failure } from "./api";
+
 /** Rejection reason for server SDK calls that return data the caller depends on. */
 export class GamebeastError extends Error {
   /** HTTP status, when the backend answered. */
@@ -16,5 +18,14 @@ export class GamebeastError extends Error {
     this.status = details.status;
     this.errorCode = details.errorCode;
     this.retryable = details.retryable ?? false;
+  }
+
+  /** The error for a failed request, e.g. `fromFailure("experiments.assign failed", result)`. */
+  static fromFailure(context: string, failure: Failure): GamebeastError {
+    return new GamebeastError(`${context}: ${failure.error}`, {
+      ...(failure.httpStatus !== undefined ? { status: failure.httpStatus } : {}),
+      ...(failure.errorCode !== undefined ? { errorCode: failure.errorCode } : {}),
+      retryable: failure.retryable,
+    });
   }
 }

@@ -1,4 +1,4 @@
-import type { ApiClient, FetchResult } from "../shared/api";
+import type { ApiClient, ConfigurationResult } from "../shared/api";
 import { parsePathOrLog, readValue } from "../shared/configStore";
 import type { Properties } from "../shared/context";
 import { sanitizeProperties } from "../shared/context";
@@ -275,7 +275,7 @@ export class ServerConfigsService implements ServerConfigs {
   }
 
   private handle(
-    result: FetchResult<ConfigurationResponse>,
+    result: ConfigurationResult,
     cacheKey: string,
     cached: CacheEntry | undefined,
     alias: string | undefined

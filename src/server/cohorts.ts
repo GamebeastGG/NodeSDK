@@ -122,16 +122,8 @@ export class ServerCohortsService implements ServerCohorts {
       for (let start = 0; start < ids.length; start += MAX_IDS_PER_REQUEST) {
         const chunk = ids.slice(start, start + MAX_IDS_PER_REQUEST);
         const result = await this.api.checkCohortMembership(name, chunk);
-        if (result.status !== "updated") {
-          const failure = result.status === "failed" ? result : undefined;
-          throw new GamebeastError(
-            `cohort check for '${name}' failed: ${result.status === "notModified" ? "unexpected 304" : result.error}`,
-            {
-              ...(failure?.httpStatus !== undefined ? { status: failure.httpStatus } : {}),
-              ...(failure?.errorCode !== undefined ? { errorCode: failure.errorCode } : {}),
-              retryable: failure?.retryable ?? false,
-            }
-          );
+        if (result.status === "failed") {
+          throw GamebeastError.fromFailure(`cohort check for '${name}' failed`, result);
         }
         if (!result.data.cohortExists) {
           this.logger.warnOnce(`cohort-missing:${name}`, `Cohort '${name}' does not exist.`);

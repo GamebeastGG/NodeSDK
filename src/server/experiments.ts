@@ -107,16 +107,8 @@ export class ServerExperimentsService implements ServerExperiments {
         ...(sharedContext ? { sharedContext } : {}),
         units: batch,
       });
-      if (result.status !== "updated") {
-        const failure = result.status === "failed" ? result : undefined;
-        throw new GamebeastError(
-          `experiments.assign failed: ${result.status === "notModified" ? "unexpected 304" : result.error}`,
-          {
-            ...(failure?.httpStatus !== undefined ? { status: failure.httpStatus } : {}),
-            ...(failure?.errorCode !== undefined ? { errorCode: failure.errorCode } : {}),
-            retryable: failure?.retryable ?? false,
-          }
-        );
+      if (result.status === "failed") {
+        throw GamebeastError.fromFailure("experiments.assign failed", result);
       }
       for (const unit of batch) {
         results.set(unit.distinctId, result.data.assignments[unit.distinctId] ?? []);

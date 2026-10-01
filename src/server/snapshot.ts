@@ -1,4 +1,4 @@
-import type { ApiClient } from "../shared/api";
+import type { ApiClient, Failure } from "../shared/api";
 import { ConfigStore, parsePathOrLog } from "../shared/configStore";
 import { toAliasSlug } from "../shared/environment";
 import type { ConfigPath } from "../shared/json";
@@ -187,9 +187,8 @@ export class SnapshotService {
         }
         return;
       }
-      case "notFound":
       case "failed":
-        this.onFailure(result.status === "failed" ? result : undefined, result.error);
+        this.onFailure(result);
         return;
       default: {
         const unreachable: never = result;
@@ -203,22 +202,15 @@ export class SnapshotService {
     const result = await this.deps.api.getBootstrap();
     if (this.stopped) return false;
     switch (result.status) {
-      case "updated":
+      case "ok":
         this.consecutiveFailures = 0;
         this.applyPolling(result.data);
         this.applyBootstrap(result.data);
         return true;
-      case "notModified":
-        // Not sent without a hash; treat as a transient oddity.
-        this.onFailure(undefined, "unexpected 304 from bootstrap");
+      case "failed":
+        this.onFailure(result);
+        if (!result.retryable && !this.state) this.settle(false);
         return false;
-      case "notFound":
-      case "failed": {
-        const permanent = result.status === "failed" && !result.retryable;
-        this.onFailure(result.status === "failed" ? result : undefined, result.error);
-        if (permanent && !this.state) this.settle(false);
-        return false;
-      }
       default: {
         const unreachable: never = result;
         throw new Error(`Unhandled fetch result ${String(unreachable)}`);
@@ -291,15 +283,12 @@ export class SnapshotService {
     if (typeof jitterRatio === "number" && jitterRatio >= 0) this.jitterRatio = jitterRatio;
   }
 
-  private onFailure(
-    result: { retryable: boolean; retryAfterSeconds?: number } | undefined,
-    error: string
-  ): void {
+  private onFailure(failure: Failure): void {
     this.consecutiveFailures += 1;
-    this.retryAfterMs = (result?.retryAfterSeconds ?? 0) * 1000;
-    const message = `Configuration snapshot refresh failed (${error}).`;
-    if (result && !result.retryable) this.deps.logger.error(message);
-    else this.deps.logger.warn(`${message} Will retry.`);
+    this.retryAfterMs = (failure.retryAfterSeconds ?? 0) * 1000;
+    const message = `Configuration snapshot refresh failed (${failure.error}).`;
+    if (failure.retryable) this.deps.logger.warn(`${message} Will retry.`);
+    else this.deps.logger.error(message);
   }
 
   private retryAfterMs = 0;

@@ -66,9 +66,10 @@ export class ClientCohortsService implements ClientCohorts {
     const userId = this.distinctId();
     const result = await this.api.checkCohortMembership(name, [userId]);
 
-    if (result.status !== "updated") {
-      const reason = result.status === "notModified" ? "unexpected 304" : result.error;
-      this.logger.warn(`Cohort check for '${name}' failed (${reason}); treating as not a member.`);
+    if (result.status === "failed") {
+      this.logger.warn(
+        `Cohort check for '${name}' failed (${result.error}); treating as not a member.`
+      );
       return false;
     }
 

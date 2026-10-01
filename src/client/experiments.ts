@@ -114,11 +114,9 @@ export class ClientExperimentsService implements ClientExperiments {
           // before asking again rather than re-requesting on every evaluation.
           this.catalogRetryNotBefore = Date.now() + 60_000;
           break;
-        case "notFound":
         case "failed": {
-          const retryable = result.status === "failed" && result.retryable;
           this.catalogRetryNotBefore =
-            Date.now() + (retryable ? 30_000 : CATALOG_FAILURE_BACKOFF_MS);
+            Date.now() + (result.retryable ? 30_000 : CATALOG_FAILURE_BACKOFF_MS);
           this.logger.warnOnce(
             "experiment-catalog",
             `Experiment names are unavailable (${result.error}); assignments are reported without them.`
