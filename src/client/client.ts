@@ -3,7 +3,7 @@ import type { Properties } from "../shared/context";
 import { sanitizeProperties } from "../shared/context";
 import type { Logger } from "../shared/logger";
 import type { BaseOptions } from "../shared/options";
-import { resolveBaseOptions } from "../shared/options";
+import { durationMs, resolveBaseOptions } from "../shared/options";
 import type { ContextValue } from "../shared/wire";
 import type { ClientCohorts } from "./cohorts";
 import { ClientCohortsService } from "./cohorts";
@@ -133,10 +133,9 @@ export class GamebeastClient {
     // service is built inert (reads return fallbacks, markers are dropped) and nothing is started.
     const inert = isServerSideRender();
 
-    const sessionMinutes = options.sessionTimeoutMinutes ?? 30;
     this.session = new SessionTracker(
       this.storage,
-      Number.isFinite(sessionMinutes) && sessionMinutes > 0 ? sessionMinutes * 60_000 : 0
+      durationMs(options.sessionTimeoutMinutes, 30, 60_000)
     );
 
     this.experimentsService = new ClientExperimentsService(this.api, this.logger);
@@ -147,7 +146,6 @@ export class GamebeastClient {
       inert,
     });
 
-    const refreshSeconds = options.configRefreshIntervalSeconds ?? 60;
     this.configsService = new ClientConfigsService(
       {
         api: this.api,
@@ -155,8 +153,7 @@ export class GamebeastClient {
         storage: this.storage,
         cachePrefix: prefix,
         appVersion: this.appVersion,
-        refreshIntervalMs:
-          Number.isFinite(refreshSeconds) && refreshSeconds > 0 ? refreshSeconds * 1000 : 0,
+        refreshIntervalMs: durationMs(options.configRefreshIntervalSeconds, 60, 1000),
         distinctId: () => this.identity.distinctId,
         properties: () => this.evaluationProperties(),
         reportAssignments: (key, assignments) => this.experimentsService.report(key, assignments),
